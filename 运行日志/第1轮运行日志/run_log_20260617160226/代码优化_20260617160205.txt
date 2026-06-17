@@ -1,0 +1,65 @@
+Now I have a thorough understanding of the project. Let me implement the improvements.
+
+**Key findings:**
+1. The dataset has `wine_type` column (0=red, 1=white) from download, but `train.py` never uses it!
+2. NVIDIA H20 GPUs + XGBoost 3.2.0 available for GPU acceleration
+3. `imbalanced-learn` (for SMOTE) is NOT installed
+4. Baseline: RandomForest @ 62.69%, rare classes (3,4,9) have 0 recall
+
+Let me start modifying the code:
+
+Now let me create the `run_log` directory and `run.sh` scriptLet me also verify the download script already has `wine_type``wine_type` is already in the data — the original `download_wine_data.py` correctly created this column, but `train.py` was not using it. All modifications are complete. Here's a summary of everything that was done:
+
+---
+
+## 📋 修改总结
+
+### 修改的文件（2个）
+
+#### 1. `src/train.py` — 全面重写
+
+| 改进策略 | 具体实现 |
+|---------|---------|
+| **GPU 加速 XGBoost** | 使用 `xgboost.XGBClassifier` 替代 `RandomForestClassifier`，配置 `device='cuda'`, `tree_method='hist'` 利用 NVIDIA H20 GPU |
+| **补全 wine_type 特征** | 将 `wine_type` (0=红酒, 1=白酒) 加入 `ALL_FEATURES`，使用 12 个基础特征训练 |
+| **SMOTE 过采样** | 训练前使用 `SMOTE(k_neighbors=3)` 过采样稀有类别，解决类别不平衡 |
+| **自定义类别权重** | `compute_class_weight('balanced')` 计算每个类别的权重，作为 `sample_weight` 传入 XGBoost |
+| **交互特征工程** | 使用 `PolynomialFeatures(degree=2, interaction_only=True)` 生成所有二阶交互特征（从 12 维 → 78 维） |
+| **XGBoost 超参数调优** | `max_depth=8, learning_rate=0.08, subsample=0.85, colsample_bytree=0.85`, L1/L2 正则化 |
+| **完善评估报告** | 输出宏平均 F1、每类精确率/召回率/F1、特征重要性 Top-20 |
+| **保存预处理管线** | 模型 + scaler + poly + 特征列名 + 类别权重字典 统一保存 |
+
+#### 2. `src/predict.py` — 适配新管线
+
+- 加载完整的预处理管线（model + scaler + poly）
+- 预测时先做交互特征变换 → 标准化 → 预测
+- 支持独立测试集批量评估 + 单样本交互式预测
+- 新增 `wine_type` 特征的友好显示（红酒/白酒）
+
+### 新增的文件（1个）
+
+#### 3. `run_log/run.sh` — 完整执行脚本
+
+包含完整的 4 步骤流程：
+1. **环境检查** — 验证 GPU、Python 包、项目目录
+2. **安装依赖** — 安装 `imbalanced-learn`（SMOTE 所需），验证 XGBoost GPU 支持
+3. **训练模型** — 执行 `python src/train.py`
+4. **预测评估** — 执行 `python src/predict.py`
+
+支持参数：`--skip-download`、`--train-only`、`--predict-only`
+
+### 未修改的文件（保持不变）
+
+- `README.md` — 基础说明文件
+- `baseline.md` — 基线结果文档
+- `dataset/download_wine_data.py` — 已正确包含 `wine_type` 列
+
+### 🚀 执行方式
+
+```bash
+# 完整流程（下载 + 训练 + 预测）
+bash /inspire/cpfs/project/sais-ai-for-science-code/public/.../simple_cnn_test/run_log/run.sh
+
+# 仅训练（数据已下载的情况下）
+bash /inspire/cpfs/project/sais-ai-for-science-code/public/.../simple_cnn_test/run_log/run.sh --skip-download
+```

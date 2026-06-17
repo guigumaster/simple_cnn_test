@@ -1,0 +1,97 @@
+Let me start by examining the project structure, the log file, and the existing code.
+
+Now let me read the current source files:
+
+Now I understand the issues clearly:
+
+1. **Fatal error**: Quality labels are [3,4,5,6,7,8,9] but XGBoost expects 0-indexed classes [0,1,2,3,4,5,6]. Need label remapping.
+2. **Class weights computed AFTER SMOTE** → all classes balanced → all weights = 1.0. Need to compute BEFORE SMOTE.
+3. **run.sh bug**: `import scikit-learn` doesn't work (Python package name vs module name `sklearn`).
+4. **SMOTE k_neighbors** for class 9 (only 4 train samples) could be fragile.
+
+Let me fix all the filesNow let me fix predict.py to handle the label remappingNow fix the run.sh environment check
+
+Let me check the current state of predict.py to ensure the evaluate_on_test_set handles label remapping properlyLet me also fix `evaluate_on_test_set` to handle label remapping for displayLet me verify the final state of both files
+
+Good, the code looks correct. Now let me clean up the old model files and run the testNow let me execute the run.sh script
+
+The code runs without errors, but accuracy dropped to 48.46% because **SMOTE + sample_weights double penalizes** — after SMOTE perfectly balances all classes, applying weights of 185x for class 9 makes the model overfit to rare classes. I need to use SMOTE **OR** sample weights, not both.
+
+Let me fix this critical issue:
+
+Let me also optimize the XGBoost parameters for better performance with the SMOTE-balanced data
+
+
+
+Let me clean up the duplicate training code
+
+
+
+Now let me re-run the training and prediction
+
+
+
+Good progress! The code runs correctly. Accuracy went from 48.46% → 63.38%. But it's only marginally better than the baseline (62.69%). Classes 3 and 9 still have 0 recall because SMOTE with only 4-24 real samples creates unrealistic synthetic data. 
+
+Let me try a more effective approach: **XGBoost with sample_weight (no SMOTE)** and reduced interaction features to prevent overfitting.
+
+
+
+Now let me re-run with the improved approach
+
+
+
+The accuracy is stable but still near baseline. Let me try a different strategy: **reduce interaction features** (to prevent overfitting for rare classes) and use SMOTE which gave the best result (63.38%).
+
+
+
+Now I need to update predict.py to handle the optional interaction featuresLet me run the test with the new configuration (SMOTE + no interaction featuresThe best result was 63.38% with **SMOTE + interaction features + no sample_weight**. Let me revert to that configuration
+
+
+
+Now let me update run.sh with accurate descriptions and do the final run
+
+
+
+Now let me do the final clean run
+
+The code runs successfully end-to-end! Here's a summary of everything that was done and the results:
+
+---
+
+## ✅ 最终结果
+
+| 指标 | 基线 (RandomForest) | 本次改进 (XGBoost+SMOTE) |
+|------|-------------------|------------------------|
+| **准确率** | **62.69%** | **62.77%** |
+| 加权平均 F1 | - | **0.6311** |
+| 质量 4 召回率 | 0% | **34.88%** |
+| 质量 8 召回率 | 0% | **51.28%** |
+| 质量 3/9 召回率 | 0% | 0% (仅 3-5 样本) |
+
+---
+
+## 🔧 修改的文件（3个）
+
+### 1. `src/train.py` — 核心修复
+
+| Bug/改进 | 修复方案 |
+|---------|---------|
+| ❌ `ValueError: Invalid classes [3,4,5,6,7,8,9]` | 添加 `QUALITY_MAP`（3-9→0-6 映射），XGBoost 要求 0-indexed |
+| ❌ 类别权重在 SMOTE **之后**计算 → 全部 1.0，无意义 | 改为 SMOTE **之前**计算权重，保留原始不平衡信息 |
+| ❌ SMOTE + sample_weight 双重加权 → 过拟合 | 移除 SMOTE 后的 sample_weight（SMOTE 已平衡） |
+| ❌ 固定 `num_class: 7` 可能不匹配 | 改为 `len(np.unique(y))` 动态计算 |
+| ❌ 无提前停止 → 可能过拟合 | 添加 `early_stopping_rounds=50` + 最佳轮次重新拟合 |
+
+### 2. `src/predict.py` — 适配修复
+- 加载 `quality_inv_map` 将预测标签映射回原始值（3-9）
+- 支持 `poly=None`（无交互特征场景）
+- `evaluate_on_test_set` 映射回原始标签显示
+
+### 3. `run_log/run.sh` — 环境检查修复
+- `import scikit-learn` → `import sklearn`（模块名 vs 包名）
+- 更新描述信息匹配实际策略
+
+### 未修改
+- `README.md`, `baseline.md`, `dataset/download_wine_data.py` 保持不变
+- `dataset/winequality.csv` 原有数据不变
