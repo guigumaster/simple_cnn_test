@@ -1,0 +1,76 @@
+Let me examine the dataset and Python environmentNow let me check the environment more and understand the dataNow I have a complete understanding. Let me implement all the changes. I'll update `train.py`, `predict.py`, and create `run.sh`.
+
+Now let me create the `run.sh` shell script
+
+Let me verify the written files are syntactically correctAll files pass syntax validation. Let me do a final comprehensive review of all modified filesLet me do a final check of the project structure所有代码修改和新增已全部就绪。下面是完整的变更总结：
+
+---
+
+## 📋 修改/新增文件总览
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `src/train.py` | **重写** | XGBoost GPU 训练 + 特征工程 + 超参数搜索 |
+| `src/predict.py` | **重写** | 与 train.py 保持特征工程一致 |
+| `run_log/run.sh` | **新增** | 完整执行流水线脚本 |
+
+（未修改 `README.md`、`baseline.md`、`download_wine_data.py`）
+
+---
+
+## 🔧 改进方案详解
+
+### 1. 修复被遗漏的关键特征 `wine_type`
+- **原代码**：`winequality.csv` 中已有 `wine_type` 列（0=红/1=白，4898 白 + 1599 红），但 `FEATURE_COLUMNS` 完全忽略了它
+- **改进**：`BASE_FEATURE_COLUMNS` 加入 `wine_type`，从 **11** 个特征增加到 **12** 个基础特征
+
+### 2. 特征工程（新增 17 个增强特征，总计 29 维）
+| 分类 | 数量 | 具体特征 |
+|------|------|----------|
+| 基础特征 | 12 | 11 理化 + wine_type |
+| 酒类交互 `wine_type × X` | 7 | alcohol, volatile acidity, residual sugar, sulphates, free SO₂, total SO₂, density |
+| 比例/组合特征 | 6 | SO₂ 游离/总比率, 醇糖比, 挥发酸×酒精, 柠檬酸/挥发酸, 硫酸盐×酒精, pH×酒精 |
+| 平方项 | 4 | alcohol², volatile acidity², density², residual sugar² |
+
+### 3. XGBoost GPU 加速（GPU: NVIDIA H20, 96GB）
+- **模型**：`xgb.XGBClassifier(tree_method="hist", device="cuda")` 
+- **目标**：`multi:softprob`，评估指标 `mlogloss`
+- **早停**：`early_stopping_rounds=30`，在 10% 验证集上监控
+
+### 4. 加权损失（样本权重）
+- `compute_sample_weights()`：`weight(c) = 总样本数 / (类别数 × count(c))`
+- 稀有类别（质量 3, 4, 9）获得更高权重，缓解严重类别不平衡
+
+### 5. 超参数搜索
+- **方法**：`RandomizedSearchCV`，30 次随机采样，3 折 StratifiedKFold
+- **搜索空间**：
+  - `n_estimators`: 200~1000
+  - `max_depth`: 4~12
+  - `learning_rate`: 0.01~0.2
+  - `subsample`: 0.6~1.0
+  - `colsample_bytree`: 0.6~1.0
+  - `min_child_weight`: 1~10
+  - `gamma`: 0~0.5
+  - `reg_alpha / reg_lambda`: L1/L2 正则化
+
+---
+
+## 🚀 执行方案（run.sh）
+
+```bash
+# 完整执行流程（在项目根目录运行）
+bash run_log/run.sh
+
+# 或分步运行：
+# 1. 训练
+python3 src/train.py
+# 2. 预测  
+python3 src/predict.py
+```
+
+`run_log/run.sh` 的 5 个步骤：
+1. **检查硬件** — `nvidia-smi`
+2. **准备数据** — 自动检测 `winequality.csv`，不存在则下载
+3. **训练模型** — `src/train.py`（超参数搜索 + 早停 + GPU）
+4. **预测评估** — `src/predict.py`（输出详细结果）
+5. **输出摘要** — 模型大小、准确率等
