@@ -1,14 +1,20 @@
 #!/bin/bash
 # ============================================================
-# 红酒质量预测 —— XGBoost GPU 加速完整流程 v2.0
-# 改进方案：XGBoost GPU加速 + 特征工程 + SMOTE + 加权损失 + 超参数搜索
+# 红酒质量预测 —— Optuna + XGBoost multi:softprob 深度改进方案
+# 标题：基于Optuna贝叶斯超参优化 + XGBoost multi:softprob +
+#        Top-N集成的红酒质量预测深度改进方案
+# 描述：保留XGBoost multi:softprob多分类损失（经验证优于独立二分类
+#       有序回归方案），使用Optuna替代RandomizedSearchCV进行高效贝叶斯
+#       超参优化（50 trials）；增强至43维特征（12基础+对数变换+酒类
+#       交互+比例组合+平方项+额外多项式交互）；Top-3模型集成投票提升
+#       泛化能力；自适应类别权重+分层抽样+早停机制，系统性提升模型性能。
 # ============================================================
 set -euo pipefail
 
 # ── 项目根目录（绝对路径）───────────────────────────────────────────
-PROJECT_ROOT="/inspire/cpfs/project/sais-ai-for-science-code/public/mession/running_location/514bde8e-62f3-47f4-b193-f8785ddf8e2b/simple_cnn_test/code/c0ced2c7-4f98-4108-b792-4614af9c7084/simple_cnn_test"
+PROJECT_ROOT="/inspire/cpfs/project/sais-ai-for-science-code/public/mession/running_location/514bde8e-62f3-47f4-b193-f8785ddf8e2b/simple_cnn_test/code/4d2cc467-1e2d-4692-b34d-fa25eb619a9a/simple_cnn_test"
 
-# 子目录
+# 目录定义
 RUN_LOG_DIR="${PROJECT_ROOT}/run_log"
 DATASET_DIR="${PROJECT_ROOT}/dataset"
 MODEL_DIR="${PROJECT_ROOT}/models"
@@ -16,7 +22,7 @@ SRC_DIR="${PROJECT_ROOT}/src"
 
 # 时间戳 & 日志文件
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-LOG_FILE="${RUN_LOG_DIR}/run_${TIMESTAMP}.log"
+LOG_FILE="${RUN_LOG_DIR}/run_advanced_${TIMESTAMP}.log"
 
 # 确保目录存在
 mkdir -p "${RUN_LOG_DIR}" "${MODEL_DIR}"
@@ -25,7 +31,7 @@ mkdir -p "${RUN_LOG_DIR}" "${MODEL_DIR}"
 exec > >(tee -a "${LOG_FILE}") 2>&1
 
 echo "============================================================"
-echo " 红酒质量预测 —— XGBoost GPU 加速 v2.0"
+echo " 红酒质量预测 —— Optuna + XGBoost multi:softprob + Top-3集成深度改进方案"
 echo " 项目根目录 : ${PROJECT_ROOT}"
 echo " 日志文件   : ${LOG_FILE}"
 echo " 时间戳     : ${TIMESTAMP}"
@@ -33,12 +39,19 @@ echo "============================================================"
 echo ""
 
 # ── 0. 检查硬件环境 ──────────────────────────────────────────────
-echo ">>> [0/5] 检查硬件环境..."
-nvidia-smi || echo "警告: nvidia-smi 不可用"
+echo ">>> [0/7] 检查硬件环境..."
+echo "  CPU 信息: $(grep 'model name' /proc/cpuinfo | head -1)"
+echo "  CPU 核心数: $(nproc)"
+echo "  内存信息: $(free -h | grep Mem | awk '{print $2}')"
+echo ""
+
+if command -v nvidia-smi &> /dev/null; then
+    nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv,noheader 2>/dev/null || nvidia-smi
+fi
 echo ""
 
 # ── 1. 数据集准备 ────────────────────────────────────────────────
-echo ">>> [1/5] 检查/下载数据集..."
+echo ">>> [1/7] 检查/下载数据集..."
 if [ -f "${DATASET_DIR}/winequality.csv" ]; then
     echo "  数据集已存在: ${DATASET_DIR}/winequality.csv"
     echo "  样本数: $(wc -l < "${DATASET_DIR}/winequality.csv") (含表头)"
@@ -49,60 +62,127 @@ fi
 echo ""
 
 # ── 2. 环境检查 ──────────────────────────────────────────────────
-echo ">>> [2/5] 检查 Python 依赖..."
-echo "  Python: $(python3 --version 2>&1)"
-echo "  XGBoost: $(python3 -c 'import xgboost; print(xgboost.__version__)' 2>&1)"
-echo "  scikit-learn: $(python3 -c 'import sklearn; print(sklearn.__version__)' 2>&1)"
-echo "  pandas: $(python3 -c 'import pandas; print(pandas.__version__)' 2>&1)"
-echo "  numpy: $(python3 -c 'import numpy; print(numpy.__version__)' 2>&1)"
-echo "  joblib: $(python3 -c 'import joblib; print(joblib.__version__)' 2>&1)"
-echo "  imbalanced-learn: $(python3 -c 'import imblearn; print(imblearn.__version__)' 2>&1)"
+echo ">>> [2/7] 检查 Python 环境..."
+echo "  Python: $(python3 --version)"
+echo "  pip: $(pip3 --version | awk '{print $2}')"
+
+# 检查关键依赖
+python3 -c "import xgboost; print(f'  XGBoost: {xgboost.__version__}')"
+python3 -c "import sklearn; print(f'  scikit-learn: {sklearn.__version__}')"
+python3 -c "import pandas; print(f'  pandas: {pandas.__version__}')"
+python3 -c "import numpy; print(f'  numpy: {numpy.__version__}')"
+python3 -c "import joblib; print(f'  joblib: {joblib.__version__}')"
+python3 -c "import imblearn; print(f'  imbalanced-learn: {imblearn.__version__}')"
 echo ""
 
-# ── 3. 模型训练（GPU 加速） ────────────────────────────────────────
-echo ">>> [3/5] 开始训练 XGBoost 模型 (GPU 加速)..."
-echo "  训练脚本: ${SRC_DIR}/train.py"
+# 安装 Optuna（如果未安装）
+echo ">>> [2b/7] 确保 Optuna 已安装..."
+python3 -c "import optuna" 2>/dev/null && \
+    echo "  Optuna: $(python3 -c 'import optuna; print(optuna.__version__)')" || \
+    (echo "  正在安装 Optuna..." && pip3 install optuna)
+echo ""
+
+# ── 3. 数据分布分析 ──────────────────────────────────────────────
+echo ">>> [3/7] 数据分布分析..."
+python3 -c "
+import pandas as pd
+df = pd.read_csv('${DATASET_DIR}/winequality.csv')
+print(f'总样本数: {len(df)}')
+print(f'质量等级分布:')
+for v, c in df['quality'].value_counts().sort_index().items():
+    print(f'  quality {v}: {c:5d} ({c/len(df)*100:.2f}%)')
+print(f'红酒: {(df[\"wine_type\"]==0).sum()}, 白酒: {(df[\"wine_type\"]==1).sum()}')
+print()
+print('有序回归阈值分布:')
+for k in [4,5,6,7,8,9]:
+    pos = (df['quality'] >= k).sum()
+    neg = (df['quality'] < k).sum()
+    print(f'  >= {k}: 正样本={pos:5d}, 负样本={neg:5d}, 比例={pos/neg:.3f}')
+"
+echo ""
+
+# ── 4. 有序回归集成模型训练（GPU 加速 + SMOTE-ENN + Optuna） ─────
+echo ">>> [4/7] 开始训练有序回归集成模型..."
+echo "  训练脚本: ${SRC_DIR}/train_advanced.py"
 echo "  开始时间: $(date)"
+echo "  训练策略:"
+echo "    1. XGBoost multi:softprob 多分类损失（保留已验证的优势）"
+echo "    2. 43维增强特征（12基础+对数变换+酒类交互+比例/组合+平方项+额外交互）"
+echo "    3. Optuna 贝叶斯超参优化 (50 trials, 11超参维度)"
+echo "    4. Top-3 模型集成投票（提升泛化）"
+echo "    5. 自适应类别权重 + 分层抽样 + 早停机制"
 echo ""
 
-# 调用绝对路径下的 Python 脚本
-python3 "${SRC_DIR}/train.py"
+time python3 "${SRC_DIR}/train_advanced.py"
 
 echo ""
 echo "  结束时间: $(date)"
 echo "  训练完成!"
 echo ""
 
-# ── 4. 模型预测 ──────────────────────────────────────────────────
-echo ">>> [4/5] 加载模型进行预测..."
-echo "  预测脚本: ${SRC_DIR}/predict.py"
+# ── 5. 有序回归集成模型预测 ──────────────────────────────────────
+echo ">>> [5/7] 有序回归集成模型预测..."
+echo "  预测脚本: ${SRC_DIR}/predict_advanced.py"
 echo "  开始时间: $(date)"
 echo ""
 
-python3 "${SRC_DIR}/predict.py"
+time python3 "${SRC_DIR}/predict_advanced.py"
 
 echo ""
 echo "  结束时间: $(date)"
 echo ""
 
-# ── 5. 输出结果摘要 ──────────────────────────────────────────────
-echo ">>> [5/5] 输出结果摘要..."
-MODEL_FILE="${MODEL_DIR}/wine_model.joblib"
-if [ -f "${MODEL_FILE}" ]; then
-    MODEL_SIZE=$(du -h "${MODEL_FILE}" | cut -f1)
-    echo "  模型文件: ${MODEL_FILE} (${MODEL_SIZE})"
+# ── 6. 与原始模型对比评估 ────────────────────────────────────────
+echo ">>> [6/7] 与原始 XGBoost 模型对比评估..."
+echo "  开始时间: $(date)"
+echo ""
+
+# 检查原始模型是否存在
+ORIGINAL_MODEL="${MODEL_DIR}/wine_model.joblib"
+if [ -f "${ORIGINAL_MODEL}" ]; then
+    echo "  原始模型存在, 运行原始预测进行对比..."
+    echo "  ---------- 原始模型预测 (XGBoost GPU baseline) ----------"
+    time python3 "${SRC_DIR}/predict.py" 2>&1 | tail -30 || echo "  原始预测脚本运行异常(可能因版本差异)"
+else
+    echo "  原始模型不存在, 跳过对比"
 fi
+echo ""
+
+echo "  结束时间: $(date)"
+echo ""
+
+# ── 7. 输出结果摘要 ──────────────────────────────────────────────
+echo ">>> [7/7] 输出结果摘要..."
+echo ""
+
+# 有序回归集成模型信息
+ENSEMBLE_MODEL="${MODEL_DIR}/ordinal_ensemble_model.joblib"
+if [ -f "${ENSEMBLE_MODEL}" ]; then
+    MODEL_SIZE=$(du -h "${ENSEMBLE_MODEL}" | cut -f1)
+    echo "  有序回归集成模型: ${ENSEMBLE_MODEL} (${MODEL_SIZE})"
+    echo "  包含 6 个 XGBoost 二分类器 + 自适应阈值 + 标准化器"
+fi
+
+TEST_DATA="${MODEL_DIR}/ordinal_test_data.joblib"
+if [ -f "${TEST_DATA}" ]; then
+    echo "  测试数据文件: ${TEST_DATA}"
+fi
+
 echo "  日志文件: ${LOG_FILE}"
 echo ""
 
 # 从日志中提取准确率
 if [ -f "${LOG_FILE}" ]; then
-    # 查找准确率行（来自 predict.py 的输出）
-    ACC_LINE=$(grep -E "测试集准确率" "${LOG_FILE}" | tail -1)
-    echo "  最新准确率: ${ACC_LINE:-N/A}"
+    echo "  ---------- 性能摘要 ----------"
+    grep -E "测试集准确率|有序回归集成模型" "${LOG_FILE}" | tail -5
+    echo ""
+    echo "  ---------- 各类别召回率 ----------"
+    grep -A 10 "各类别召回率:" "${LOG_FILE}" | head -12
 fi
 
 echo ""
 echo "============================================================"
 echo " 全部流程完成!"
+echo " 改进方案: Optuna + XGBoost multi:softprob + 43维特征 + Top-3集成"
+echo " 日志文件: ${LOG_FILE}"
 echo "============================================================"

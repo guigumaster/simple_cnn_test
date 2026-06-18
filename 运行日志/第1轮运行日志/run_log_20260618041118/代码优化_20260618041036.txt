@@ -1,0 +1,84 @@
+Let me start by exploring the project structure and understanding the codebaseNow let me check the baseline.md and understand the data distribution better.
+
+Now I have a complete picture. Let me check the existing run.sh format:
+
+Now I have a complete understanding. Let me implement the advanced solution. I'll create 3 files:
+
+1. **`src/train_advanced.py`** - Ordinal Regression + SMOTE-ENN + Optuna training
+2. **`src/predict_advanced.py`** - Advanced prediction with ensemble strategy
+3. **`run_log/run.sh`** - Execution script
+
+Let me start writing the training script:
+
+Now let me write the advanced prediction scriptNow let me write the `run_log/run.sh` execution script:
+
+所有文件通过语法检查。让我验证完整的文件结构：
+
+所有文件已完成。下面是完整的改进说明：
+
+---
+
+## ✅ 完成总结
+
+### 新增文件（共3个）
+
+| 文件 | 路径 | 描述 |
+|:---|:---|:---|
+| **训练脚本** | `src/train_advanced.py` | 22KB — 有序回归 + SMOTE-ENN + Optuna 训练 |
+| **预测脚本** | `src/predict_advanced.py` | 12KB — 有序回归集成预测 |
+| **执行脚本** | `run_log/run.sh` | 8KB — 完整自动化执行流程 |
+
+### 改进方案详解
+
+#### 1️⃣ 有序回归损失（Ordinal Regression）
+- 将原有的7类 `multi:softprob` 多分类损失**替换为6个有序二分类器**
+- 每个二分类器预测 `quality ≥ k`（k=4,5,6,7,8,9），充分利用质量等级的序数关系
+- **最终预测**：`y_pred = 3 + Σ(I(p_k ≥ threshold_k))`，利用累积投票机制
+
+#### 2️⃣ SMOTE-ENN 混合采样
+- 在每个二分类子问题上独立应用 `SMOTEENN` 
+- **SMOTE** 过采样稀有类别（合成少数类样本）
+- **ENN** 清洗重叠/噪声样本（Edited Nearest Neighbors）
+- 解决极端不平衡问题（如 quality=9 只有5个样本）
+
+#### 3️⃣ Optuna 贝叶斯超参优化
+- 替代原有的 `RandomizedSearchCV`，使用 **TPE采样器 + MedianPruner**
+- 每个二分类器独立搜索 25 个 trial
+- 优化空间覆盖 10 个超参数维度（n_estimators, max_depth, learning_rate, subsample, colsample_bytree, min_child_weight, gamma, reg_alpha, reg_lambda, max_delta_step）
+- 内置早停回调，避免无谓搜索
+
+#### 4️⃣ 自适应阈值校准
+- 对每个二分类器，在验证集上搜索最优决策概率阈值（0.30~0.78 步步长0.02）
+- 基于 F1 分数选择最佳截断点，而非默认 0.5
+- 处理不同阈值下概率分布的差异
+
+#### 5️⃣ 分层集成策略
+- 特征从 36 维升级到 **43 维**（增加7个额外多项式交互特征）
+- 数据划分：训练 68% / 验证 12% / 测试 20%
+- 6个二分类器 + 6个独立StandardScaler + 6个校准阈值 = 完整集成包
+
+### 执行方式
+
+```bash
+cd /inspire/cpfs/project/sais-ai-for-science-code/public/mession/running_location/514bde8e-62f3-47f4-b193-f8785ddf8e2b/simple_cnn_test/code/4d2cc467-1e2d-4692-b34d-fa25eb619a9a/simple_cnn_test
+
+# 方法1：一键执行完整流程
+bash run_log/run.sh
+
+# 方法2：分步执行
+pip install optuna                                    # 安装Optuna
+python src/train_advanced.py                          # 训练有序回归集成模型
+python src/predict_advanced.py                        # 预测评估
+```
+
+### 与原始方案的对比
+
+| 维度 | 原始方案 (XGBoost GPU) | 深度改进方案 |
+|:----|:---------------------|:-----------|
+| **损失函数** | `multi:softprob` 多分类 | 6个 `binary:logistic` 有序二分类器 |
+| **不平衡处理** | 样本权重（逆频率） | SMOTE-ENN 混合采样 + scale_pos_weight |
+| **超参搜索** | RandomizedSearchCV (20次) | Optuna 贝叶斯优化 (6×25=150次) |
+| **决策阈值** | 固定 0.5 | 自适应校准（验证集F1最优） |
+| **特征维度** | 36维 | 43维（额外7个交互特征） |
+| **集成策略** | 单模型 | 6模型分层集成 |
+| **GPU利用** | 单模型GPU | 6个独立训练 + GPU并行 |
